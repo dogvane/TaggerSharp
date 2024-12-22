@@ -108,7 +108,14 @@ namespace TaggerSharp
         /// <returns></returns>
         public ImageTagResult GetImageTag(string fileName)
         {
-            return GetImageTags(new[] { fileName }).First();
+            var dataset = new ImageDataSet([fileName],
+                size: _config.ImageSize,
+                cacheSize: _config.ImageCacheSize,
+                usePreload: _config.UsePreload,
+                deviceType: _config.DeviceType,
+                scalarType: _config.ScalarType);
+
+            return GetImageTags(dataset).First();
         }
 
         public IEnumerable<ImageTagResult> GetImageTagByFolder(string folder)
@@ -117,7 +124,24 @@ namespace TaggerSharp
                 .Where(file =>file.IsImage())
                 .ToArray();
 
-            return GetImageTags(imagesFileNames);
+            var dataset = new ImageDataSet(imagesFileNames,
+                size: _config.ImageSize,
+                cacheSize: _config.ImageCacheSize,
+                usePreload: _config.UsePreload,
+                deviceType: _config.DeviceType,
+                scalarType: _config.ScalarType);
+
+            return GetImageTags(dataset);
+        }
+
+        public IEnumerable<ImageTagResult> GetImageTagByZipFile(string zipFileName)
+        {
+            var dataset = new ZipImageDataSet(zipFileName,
+                size: _config.ImageSize,
+                deviceType: _config.DeviceType,
+                scalarType: _config.ScalarType);
+
+            return GetImageTags(dataset);
         }
 
         /// <summary>
@@ -125,14 +149,8 @@ namespace TaggerSharp
         /// </summary>
         /// <param name="fileName"></param>
         /// <returns></returns>
-        public IEnumerable<ImageTagResult> GetImageTags(string[] fileNames)
+        public IEnumerable<ImageTagResult> GetImageTags(WDImageDataSet dataset)
         {
-            ImageDataSet dataset = new ImageDataSet(fileNames,
-                size: _config.ImageSize,
-                cacheSize: _config.ImageCacheSize,
-                usePreload: _config.UsePreload,
-                deviceType: _config.DeviceType,
-                scalarType: _config.ScalarType);
 
             DataLoader dataLoader = new DataLoader(dataset, _config.BatchSize,
                 num_worker: _config.NumWorker,
@@ -171,7 +189,7 @@ namespace TaggerSharp
                     for (int i = 0; i < counts.Length; i++)
                     {
                         StringBuilder stringBuilder = new StringBuilder();
-                        string name = Path.GetFileNameWithoutExtension(dataset.GetFileName(indexs[i].ToInt64()));
+                        string name = dataset.GetFileName(indexs[i].ToInt64());
                         long[] sortedIndex = sortedIndices[i].data<long>().ToArray();
                         float[] tagProbabilities = sigmoid_result[i].to(torch.float32).data<float>().ToArray();
                         ImageTagResult ret = new ImageTagResult

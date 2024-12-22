@@ -1,62 +1,56 @@
-﻿using TorchSharp;
+﻿using Google.Protobuf.WellKnownTypes;
+using System;
+using System.Collections.Generic;
+using System.IO.Compression;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using TorchSharp;
 using static TorchSharp.torch;
 
 namespace TaggerSharp
 {
-    public abstract class WDImageDataSet : utils.data.Dataset
+    public class ZipImageDataSet : WDImageDataSet
     {
-        public abstract string GetFileName(long index);
-    }
+        private List<ZipArchiveEntry> imageFiles = new List<ZipArchiveEntry>();
+        private Device device;
+        private ScalarType scalarType;
+        private int size;
+        private int cacheSize;
+        private Dictionary<int, Tensor> cacheImages = new Dictionary<int, Tensor>();
+        private int currentIndex = 0;
+        private bool usePreload = false;
+        ZipArchive zipArchive;
 
-    internal class ImageDataSet : WDImageDataSet
-    {
-		private List<string> imageFiles = new List<string>();
-		private Device device;
-		private ScalarType scalarType;
-		private int size;
-		private int cacheSize;
-		private Dictionary<int, Tensor> cacheImages = new Dictionary<int, Tensor>();
-		private int currentIndex = 0;
-		private bool usePreload = false;
-        
         /// <summary>
         /// 初始化 ImageDataSet 类的实例，根据指定的参数加载图像文件并进行预处理。
         /// </summary>
-        /// <param name="rootPath">图像文件的根目录路径。</param>
+        /// <param name="zipFileName">包含图片的zip文件名。</param>
         /// <param name="size">调整图像大小的目标尺寸，默认为 448。</param>
         /// <param name="cacheSize">缓存大小，默认为 800。</param>
         /// <param name="usePreload">是否使用预加载，默认为 false。</param>
         /// <param name="deviceType">设备类型，默认为 CUDA。</param>
         /// <param name="scalarType">张量的数据类型，默认为 Float16。</param>
-        public ImageDataSet(string rootPath, int size = 448, int cacheSize = 800, bool usePreload = false, DeviceType deviceType = DeviceType.CUDA, ScalarType scalarType = ScalarType.Float16)
+        public ZipImageDataSet(string zipFileName, int size = 448, int cacheSize = 800, bool usePreload = false, DeviceType deviceType = DeviceType.CUDA, ScalarType scalarType = ScalarType.Float16)
         {
-            string[] imagesFileNames = Directory.GetFiles(rootPath, "*.*", SearchOption.AllDirectories)
-                .Where(file => file.IsImage())
-                .ToArray();
+            // 打开一个zip文件
+            zipArchive  = ZipFile.OpenRead(zipFileName);
+
+            foreach (ZipArchiveEntry entry in zipArchive.Entries)
+            {
+                if (entry.Name.IsImage())
+                {
+                    imageFiles.Add(entry);
+                }
+            }
 
             // 调用另一个构造函数来初始化
-            Init(imagesFileNames, size, cacheSize, usePreload, deviceType, scalarType);
+            Init(size, cacheSize, usePreload, deviceType, scalarType);
         }
 
-        /// <summary>
-        /// 初始化 ImageDataSet 类的实例，根据指定的参数加载图像文件并进行预处理。
-        /// </summary>
-        /// <param name="imagesFileNames">图片文件列表。</param>
-        /// <param name="size">调整图像大小的目标尺寸，默认为 448。</param>
-        /// <param name="cacheSize">缓存大小，默认为 800。</param>
-        /// <param name="usePreload">是否使用预加载，默认为 false。</param>
-        /// <param name="deviceType">设备类型，默认为 CUDA。</param>
-        /// <param name="scalarType">张量的数据类型，默认为 Float16。</param>
-        public ImageDataSet(string[] imagesFileNames, int size = 448, int cacheSize = 800, bool usePreload = false, DeviceType deviceType = DeviceType.CUDA, ScalarType scalarType = ScalarType.Float16)
-        {
-            Init(imagesFileNames, size, cacheSize, usePreload, deviceType, scalarType);
-        }
 
-        private void Init(string[] imagesFileNames, int size, int cacheSize, bool usePreload, DeviceType deviceType, ScalarType scalarType)
+        private void Init(int size, int cacheSize, bool usePreload, DeviceType deviceType, ScalarType scalarType)
         {
-            // 将所有图像文件路径添加到列表中
-            imageFiles.AddRange(imagesFileNames);
-
             // 设置是否使用预加载
             this.usePreload = usePreload;
 
@@ -107,9 +101,13 @@ namespace TaggerSharp
                     // 如果缓存中不包含当前索引的图像
                     if (!cacheImages.ContainsKey(i))
                     {
-                        // 读取图像并添加到缓存中
-                        Tensor Img = torchvision.io.read_image(imageFiles[i]);
-                        cacheImages.Add(i, Img);
+                        lock (imageFiles) // 因为是一个zip文件，多线程读取同一个文件，会出问题，在不大改代码情况下，用锁最方便
+                        {
+                            using var imageStream = imageFiles[i].Open();
+                            // 读取图像并添加到缓存中
+                            Tensor Img = torchvision.io.read_image(imageStream);
+                            cacheImages.Add(i, Img);
+                        }
                     }
                 }
             }
@@ -126,12 +124,12 @@ namespace TaggerSharp
             Thread.Sleep(2);
         }
 
-		public override long Count => imageFiles.Count;
+        public override long Count => imageFiles.Count;
 
-		public override string GetFileName(long index)
-		{
-			return imageFiles[(int)index];
-		}
+        public override string GetFileName(long index)
+        {
+            return imageFiles[(int)index].FullName;
+        }
 
         /// <summary>
         /// 根据提供的索引获取对应的图像张量和索引。
@@ -149,29 +147,40 @@ namespace TaggerSharp
             // 定义一个空张量用于存储图像
             Tensor Img = torch.zeros(0);
 
-            if (usePreload)
+            try
             {
-                // 如果使用预加载，从缓存中获取图像并进行类型转换和归一化
-                Img = cacheImages.GetValueOrDefault(currentIndex).to(scalarType, device) / 255.0f;
+                if (usePreload)
+                {
+                    // 如果使用预加载，从缓存中获取图像并进行类型转换和归一化
+                    Img = cacheImages.GetValueOrDefault(currentIndex).to(scalarType, device) / 255.0f;
+                }
+                else
+                {
+                    lock (imageFiles) // 因为是一个zip文件，多线程读取同一个文件，会出问题，在不大改代码情况下，用锁最方便
+                    {
+                        using var imageStream = imageFiles[(int)index].Open();
+                        // 如果不使用预加载，读取图像文件并进行类型转换和归一化
+                        Img = torchvision.io.read_image(imageStream).to(scalarType, device) / 255.0f;
+                    }
+                }
+
+                // 调整图像尺寸
+                Img = Letterbox(Img, size, size);
+
+                // 将图像通道从RGB转换为BGR
+                Tensor r = Img[0].unsqueeze(0);
+                Tensor g = Img[1].unsqueeze(0);
+                Tensor b = Img[2].unsqueeze(0);
+                Img = torch.cat(new Tensor[] { b, g, r });
+
+                // 将图像张量和索引添加到输出字典中
+                outputs.Add("image", Img);
+                outputs.Add("index", torch.tensor(index));
             }
-            else
+            catch (InvalidDataException ex)
             {
-                // 如果不使用预加载，读取图像文件并进行类型转换和归一化
-                Img = torchvision.io.read_image(imageFiles[(int)index]).to(scalarType, device) / 255.0f;
+                Console.WriteLine($"Skipping file {imageFiles[(int)index].FullName} due to error: {ex.Message}");
             }
-
-            // 调整图像尺寸
-            Img = Letterbox(Img, size, size);
-
-            // 将图像通道从RGB转换为BGR
-            Tensor r = Img[0].unsqueeze(0);
-            Tensor g = Img[1].unsqueeze(0);
-            Tensor b = Img[2].unsqueeze(0);
-            Img = torch.cat(new Tensor[] { b, g, r });
-
-            // 将图像张量和索引添加到输出字典中
-            outputs.Add("image", Img);
-            outputs.Add("index", torch.tensor(index));
 
             // 返回包含图像和索引的字典
             return outputs;
