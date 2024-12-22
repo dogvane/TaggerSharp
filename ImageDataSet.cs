@@ -13,7 +13,7 @@ namespace TaggerSharp
 		private Dictionary<int, Tensor> cacheImages = new Dictionary<int, Tensor>();
 		private int currentIndex = 0;
 		private bool usePreload = false;
-
+        
         /// <summary>
         /// 初始化 ImageDataSet 类的实例，根据指定的参数加载图像文件并进行预处理。
         /// </summary>
@@ -25,13 +25,9 @@ namespace TaggerSharp
         /// <param name="scalarType">张量的数据类型，默认为 Float16。</param>
         public ImageDataSet(string rootPath, int size = 448, int cacheSize = 800, bool usePreload = false, DeviceType deviceType = DeviceType.CUDA, ScalarType scalarType = ScalarType.Float16)
         {
-            string[] imagesFileNames = Directory.GetFiles(rootPath, "*.*", SearchOption.AllDirectories).Where(file =>
-            {
-                // 获取文件扩展名
-                string extension = Path.GetExtension(file).ToLower();
-                // 筛选出指定格式的图像文件
-                return extension == ".jpg" || extension == ".png" || extension == ".bmp" || extension == ".webp";
-            }).ToArray();
+            string[] imagesFileNames = Directory.GetFiles(rootPath, "*.*", SearchOption.AllDirectories)
+                .Where(file => file.IsImage())
+                .ToArray();
 
             // 调用另一个构造函数来初始化
             Init(imagesFileNames, size, cacheSize, usePreload, deviceType, scalarType);

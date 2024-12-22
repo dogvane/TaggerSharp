@@ -113,13 +113,9 @@ namespace TaggerSharp
 
         public IEnumerable<ImageTagResult> GetImageTagByFolder(string folder)
         {
-            string[] imagesFileNames = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories).Where(file =>
-            {
-                // 获取文件扩展名
-                string extension = Path.GetExtension(file).ToLower();
-                // 筛选出指定格式的图像文件
-                return extension == ".jpg" || extension == ".png" || extension == ".bmp" || extension == ".webp";
-            }).ToArray();
+            string[] imagesFileNames = Directory.GetFiles(folder, "*.*", SearchOption.AllDirectories)
+                .Where(file =>file.IsImage())
+                .ToArray();
 
             return GetImageTags(imagesFileNames);
         }
