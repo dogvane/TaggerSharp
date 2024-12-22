@@ -11,7 +11,7 @@ using static TorchSharp.torch;
 
 namespace TaggerSharp
 {
-    public class WD14
+    public class WD14:IDisposable
     {
         /// <summary>
         /// 配置类，用于存储模型和标签的相关配置参数。
@@ -80,6 +80,11 @@ namespace TaggerSharp
         List<TagItem> _tags;
         jit.ScriptModule _model;
 
+        public void Dispose()
+        {
+            _model.Dispose();
+        }
+
         public WD14(Config config)
         {
             _config = config;
@@ -115,7 +120,12 @@ namespace TaggerSharp
                 deviceType: _config.DeviceType,
                 scalarType: _config.ScalarType);
 
-            return GetImageTags(dataset).First();
+            DataLoader dataLoader = new DataLoader(dataset, _config.BatchSize,
+                num_worker: _config.NumWorker,
+                device: new Device(_config.DeviceType),
+                shuffle: false);
+
+            return GetImageTags(dataset, dataLoader).First();
         }
 
         public IEnumerable<ImageTagResult> GetImageTagByFolder(string folder)
@@ -131,17 +141,25 @@ namespace TaggerSharp
                 deviceType: _config.DeviceType,
                 scalarType: _config.ScalarType);
 
-            return GetImageTags(dataset);
+            DataLoader dataLoader = new DataLoader(dataset, _config.BatchSize,
+                num_worker: _config.NumWorker,
+                device: new Device(_config.DeviceType),
+                shuffle: false);
+
+            return GetImageTags(dataset, dataLoader);
         }
 
-        public IEnumerable<ImageTagResult> GetImageTagByZipFile(string zipFileName)
+        public ImageTagResult[] GetImageTagByZipFile(string zipFileName)
         {
-            var dataset = new ZipImageDataSet(zipFileName,
+            using var dataset = new ZipImageDataSet(zipFileName,
                 size: _config.ImageSize,
                 deviceType: _config.DeviceType,
                 scalarType: _config.ScalarType);
-
-            return GetImageTags(dataset);
+            using DataLoader dataLoader = new DataLoader(dataset, _config.BatchSize,
+                num_worker: _config.NumWorker,
+                device: new Device(_config.DeviceType),
+                shuffle: false);
+            return GetImageTags(dataset, dataLoader).ToArray();
         }
 
         /// <summary>
@@ -149,14 +167,8 @@ namespace TaggerSharp
         /// </summary>
         /// <param name="fileName"></param>
         /// <returns></returns>
-        public IEnumerable<ImageTagResult> GetImageTags(WDImageDataSet dataset)
+        public IEnumerable<ImageTagResult> GetImageTags(WDImageDataSet dataset, DataLoader dataLoader)
         {
-
-            DataLoader dataLoader = new DataLoader(dataset, _config.BatchSize,
-                num_worker: _config.NumWorker,
-                device: new Device(_config.DeviceType),
-                shuffle: false);
-
             Stopwatch sw = Stopwatch.StartNew();
 
             int step = 0;
@@ -169,19 +181,19 @@ namespace TaggerSharp
                     Tensor images = imageData["image"];
                     Tensor indexs = imageData["index"];
 
-                    Tensor result = (Tensor)_model.forward(images);
+                    using Tensor result = (Tensor)_model.forward(images);
 
                     // 对 result 张量应用 sigmoid 函数，然后选择从第5列（索引4）开始的所有列
-                    var sigmoid_result = result.sigmoid()[TensorIndex.Ellipsis, 4..];
+                    using var sigmoid_result = result.sigmoid()[TensorIndex.Ellipsis, 4..];
 
                     // 对 result 张量按行（dim: 1）进行排序，并返回排序后的索引，按降序排序
-                    var sortedIndices = sigmoid_result.argsort(dim: 1, descending: true);
+                    using var sortedIndices = sigmoid_result.argsort(dim: 1, descending: true);
 
                     // 创建一个布尔掩码，表示 result 张量中大于 threshold 的元素
-                    var mask = sigmoid_result > _config.Threshold; ;
+                    using var mask = sigmoid_result > _config.Threshold; ;
 
                     // 对 mask 张量按行求和，得到每行中大于 threshold 的元素数量，并保持维度
-                    Tensor countTensor = mask.sum(1, true);
+                    using var countTensor = mask.sum(1, true);
 
                     // 将 countTensor 转换为 long 类型的数组，表示每行中大于 threshold 的元素数量
                     long[] counts = countTensor.data<long>().ToArray();
@@ -248,6 +260,7 @@ namespace TaggerSharp
             }
             return tags;
         }
+
     }
 
     public class ImageTagResult

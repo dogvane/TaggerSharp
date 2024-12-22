@@ -22,6 +22,15 @@ namespace TaggerSharp
         private bool usePreload = false;
         ZipArchive zipArchive;
 
+        protected override void Dispose(bool disposing)
+        {
+            imageFiles.Clear();
+            cacheImages.Clear();
+            zipArchive.Dispose();
+
+            base.Dispose(disposing);
+        }
+
         /// <summary>
         /// 初始化 ImageDataSet 类的实例，根据指定的参数加载图像文件并进行预处理。
         /// </summary>
@@ -105,7 +114,7 @@ namespace TaggerSharp
                         {
                             using var imageStream = imageFiles[i].Open();
                             // 读取图像并添加到缓存中
-                            Tensor Img = torchvision.io.read_image(imageStream);
+                            Tensor Img = torchvision.io.read_image(imageStream).Letterbox(size,size);
                             cacheImages.Add(i, Img);
                         }
                     }
@@ -151,7 +160,7 @@ namespace TaggerSharp
             {
                 if (usePreload)
                 {
-                    // 如果使用预加载，从缓存中获取图像并进行类型转换和归一化
+                    // 如果使用预加载时，也会同步做尺寸调整，这里就不用再调整了
                     Img = cacheImages.GetValueOrDefault(currentIndex).to(scalarType, device) / 255.0f;
                 }
                 else
@@ -159,13 +168,14 @@ namespace TaggerSharp
                     lock (imageFiles) // 因为是一个zip文件，多线程读取同一个文件，会出问题，在不大改代码情况下，用锁最方便
                     {
                         using var imageStream = imageFiles[(int)index].Open();
-                        // 如果不使用预加载，读取图像文件并进行类型转换和归一化
-                        Img = torchvision.io.read_image(imageStream).to(scalarType, device) / 255.0f;
+                        // 先调整尺寸，再将数据放到GPU上，这样显存占用会小很多
+                        // 但是仍然会存在一个问题，就是调整尺寸需要cpu参与，性能上会有损失
+                        Img = torchvision.io.read_image(imageStream).Letterbox(size, size).to(scalarType, device) / 255.0f;
                     }
                 }
 
                 // 调整图像尺寸
-                Img = Letterbox(Img, size, size);
+                //Img = Letterbox(Img, size, size);
 
                 // 将图像通道从RGB转换为BGR
                 Tensor r = Img[0].unsqueeze(0);
@@ -186,38 +196,5 @@ namespace TaggerSharp
             return outputs;
         }
 
-        /// <summary>
-        /// 调整图像大小并填充以适应目标宽度和高度，同时保持图像的纵横比。
-        /// </summary>
-        /// <param name="image">输入的图像张量。</param>
-        /// <param name="targetWidth">目标宽度。</param>
-        /// <param name="targetHeight">目标高度。</param>
-        /// <returns>调整大小并填充后的图像张量。</returns>
-        private Tensor Letterbox(Tensor image, int targetWidth, int targetHeight)
-        {
-            // 获取原始图像的宽度和高度
-            int originalWidth = (int)image.shape[2];
-            int originalHeight = (int)image.shape[1];
-
-            // 计算缩放比例，以保持图像的纵横比
-            float scale = Math.Min((float)targetWidth / originalWidth, (float)targetHeight / originalHeight);
-
-            // 计算缩放后的宽度和高度
-            int scaledWidth = (int)(originalWidth * scale);
-            int scaledHeight = (int)(originalHeight * scale);
-
-            // 计算填充的左边和顶部的大小
-            int padLeft = (targetWidth - scaledWidth) / 2;
-            int padTop = (targetHeight - scaledHeight) / 2;
-
-            // 调整图像大小
-            Tensor scaledImage = torchvision.transforms.functional.resize(image, scaledHeight, scaledWidth);
-
-            // 创建一个填充后的图像张量，并将缩放后的图像复制到填充后的图像张量中
-            Tensor paddedImage = torch.ones([3, targetHeight, targetWidth], image.dtype, image.device);
-            paddedImage[TensorIndex.Ellipsis, padTop..(padTop + scaledHeight), padLeft..(padLeft + scaledWidth)].copy_(scaledImage);
-
-            return paddedImage;
-        }
     }
 }
